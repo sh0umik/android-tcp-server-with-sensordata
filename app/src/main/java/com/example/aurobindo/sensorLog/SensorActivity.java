@@ -16,6 +16,10 @@ import android.view.MenuItem;
 import android.widget.Button;
 import android.widget.TextView;
 
+import com.example.aurobindo.sensorLog.orientationProvider.ImprovedOrientationSensor1Provider;
+import com.example.aurobindo.sensorLog.orientationProvider.OrientationProvider;
+import com.example.aurobindo.sensorLog.representation.Quaternion;
+
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileWriter;
@@ -30,27 +34,28 @@ import java.util.Date;
 import java.util.Enumeration;
 import java.util.Locale;
 
-public class SensorActivity extends AppCompatActivity implements SensorEventListener {
-
-    private boolean toggle = false;
-    private SensorManager sensormanager = null;
-    private File externalStorageDirectory;
-    private FileWriter filewriterAcc, filewriterGyro;
-    private TextView dispAcc, dispGyro;
-    private Button track, stop;
+public class SensorActivity extends AppCompatActivity {
 
     // Server Items
 
-    private TextView tvClientMsg, tvServerIP, tvServerPort;
+    private boolean toggle = false;
+
+    private TextView tvServerIP, tvServerPort;
     private final int SERVER_PORT = 6789;
-    private String Server_Name = "testapp";
 
-    SimpleDateFormat dateFormat = new SimpleDateFormat("HH:mm:ss", Locale.getDefault());
+    // sensor data
 
-    // Sensor Data
+    private OrientationProvider orientationProvider = null;
+    private Quaternion quaternion = new Quaternion();
 
-    private float x, y, z;
-    private String acc, gyro;
+    public String w, x , y, z, data;
+
+    // Socket
+
+    Socket mySocket;
+    DataOutputStream responseStream;
+
+    private TextView dispAcc, dispGyro;
 
     @Override
     protected void onCreate(Bundle savedInstanceState)
@@ -58,25 +63,23 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        sensormanager = (SensorManager) getSystemService(Context.SENSOR_SERVICE);
-        externalStorageDirectory = Environment.getExternalStorageDirectory();
+        // set the provider
+        // set which is selected from the dropdown #todo
+        orientationProvider = new ImprovedOrientationSensor1Provider((SensorManager) getSystemService(SensorActivity.SENSOR_SERVICE));
+        orientationProvider.start();
 
-        dispAcc = (TextView) findViewById(R.id.tv_acc);
-        dispGyro = (TextView) findViewById(R.id.tv_gyro);
-        track = (Button) findViewById(R.id.button_Track);
-        stop = (Button) findViewById(R.id.button_Stop);
-        try {
-            filewriterAcc = new FileWriter(new File(externalStorageDirectory, "accelerometer_"+dateFormat.format(new Date())+".tsv"), true);
-            filewriterGyro = new FileWriter(new File(externalStorageDirectory, "gyroscope_"+dateFormat.format(new Date())+".tsv"), true);
-        } catch (IOException e) {}
+
 
         // Start the TCP Server
 
-        tvClientMsg = (TextView) findViewById(R.id.textViewClientMessage);
         tvServerIP = (TextView) findViewById(R.id.textViewServerIP);
         tvServerPort = (TextView) findViewById(R.id.textViewServerPort);
         tvServerPort.setText(Integer.toString(SERVER_PORT));
         getDeviceIpAddress();
+
+        dispAcc = (TextView) findViewById(R.id.tv_acc);
+
+        dispAcc.setText(data);
 
         new Thread(new Runnable() {
 
@@ -131,72 +134,6 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
     }
 
     @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy)
-    {
-
-    }
-
-    @Override
-    public void onSensorChanged(SensorEvent event) {
-
-        /**************************** Accelerometer ***************************/
-        if (event.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            x = event.values[0];
-            y = event.values[1];
-            z = event.values[2];
-            if(toggle)  {
-                acc = "x=" + x + "\ty=" + y + "\tz=" + z;
-                dispAcc.setText(acc);
-
-//                try {
-//                    filewriterAcc.write("\n" + dateFormat.format(new Date()) + "\t" + x + "\t" + y + "\t" + z);
-//                } catch (IOException e) {
-//                    e.printStackTrace();
-//                }
-            }
-        }
-
-        /***************************** Gyroscope ******************************/
-       if (event.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-            x = event.values[0];
-            y = event.values[1];
-            z = event.values[2];
-            if(toggle)  {
-                gyro = "x=" + x + "\ty=" + y + "\tz=" + z;
-
-                dispAcc.setText(gyro);
-
-//                try {
-//                    filewriterGyro.write("\n" + dateFormat.format(new Date()) + "\t" + x + "\t" + y + "\t" + z);
-//                } catch (IOException e) {
-//                    e.printStackTrace();
-//                }
-            }
-        }
-    }
-
-
-    public void trackStart (View view) {
-        toggle = true;
-        // Sensor start to listen
-        sensormanager.registerListener(this,
-                sensormanager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER),
-                SensorManager.SENSOR_DELAY_FASTEST);
-        sensormanager.registerListener(this,
-                sensormanager.getDefaultSensor(Sensor.TYPE_GYROSCOPE),
-                SensorManager.SENSOR_DELAY_FASTEST);
-    }
-
-    public void trackStop (View view) {
-        toggle = false;
-        sensormanager.unregisterListener(this);
-        try {
-            filewriterAcc.close();
-            filewriterGyro.close();
-        } catch (IOException e) {}
-    }
-
-    @Override
     public boolean onOptionsItemSelected(MenuItem item) {
         // Handle action bar item clicks here. The action bar will
         // automatically handle clicks on the Home/Up button, so long
@@ -211,27 +148,62 @@ public class SensorActivity extends AppCompatActivity implements SensorEventList
         return super.onOptionsItemSelected(item);
     }
 
+
+    public void trackStart (View view) {
+        toggle = true;
+        // Sensor start to listen
+    }
+
+    public void trackStop (View view) {
+        toggle = false;
+        orientationProvider.stop();
+    }
+
     /**
      * AsyncTask which handles the commiunication with clients
      */
     class ServerAsyncTask extends AsyncTask<Socket, Void, String> {
+
+        @Override
+        protected void onPreExecute() {
+            super.onPreExecute();
+        }
+
+
         @Override
         protected String doInBackground(Socket... params) {
-            String result = null;
-            Socket mySocket = params[0];
-            while(true) {
-                try {
 
-                    DataOutputStream responseStream = new DataOutputStream(mySocket.getOutputStream());
-                    responseStream.writeBytes("Accelorometer : "+ acc + "\n\n" + "Gyroscope : " + gyro + "\n");
+            mySocket = params[0];
+            try {
+                responseStream = new DataOutputStream(mySocket.getOutputStream());
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+            while(true) {
+
+                if (toggle == false)
+                    break;
+
+                try {
+                    orientationProvider.getQuaternion(quaternion);
+                    w = String.valueOf(quaternion.getW());
+                    x = String.valueOf(quaternion.getX());
+                    y = String.valueOf(quaternion.getY());
+                    z = String.valueOf(quaternion.getZ());
+                    data = w + "|" + x + "|" + y + "|" + z + "\n";
+
+                    responseStream.writeBytes(data);
                     responseStream.flush();
 
+
                     //mySocket.close();
-                } catch (IOException e) {
+                } catch (Exception e) {
                     e.printStackTrace();
                 }
             }
-            //return result;
+
+            return null;
         }
 
         @Override
